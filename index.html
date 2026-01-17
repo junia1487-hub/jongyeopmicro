@@ -1,0 +1,1272 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Halftone Tool MVP</title>
+  <style>
+    :root{color-scheme:dark;}
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Noto Sans KR",sans-serif;background:#0b0b0b;color:#eaeaea;}
+    .app{display:flex;height:100vh;}
+    .stage{flex:1;display:flex;align-items:center;justify-content:center;padding:16px;}
+    canvas#view{background:#111;border:1px solid #222;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.4);max-width:100%;height:auto;}
+    .panel{width:380px;border-left:1px solid #222;padding:16px;overflow:auto;}
+    label{font-size:12px;color:#cfcfcf;display:block;margin:0 0 6px;}
+    input[type="range"]{width:100%;}
+    select,button,input[type="file"]{width:100%;padding:10px;border-radius:10px;border:1px solid #2a2a2a;background:#121212;color:#eaeaea;}
+    button{cursor:pointer;}
+    button:hover{border-color:#3a3a3a;}
+    .two{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+    .hint{font-size:12px;color:#9a9a9a;line-height:1.45;margin-top:6px;}
+    .pill{font-size:11px;color:#aaa;background:#141414;border:1px solid #232323;padding:6px 8px;border-radius:999px;display:inline-block;}
+    .status{font-size:12px;color:#bdbdbd;margin-top:8px;}
+    .ok{color:#6ee7b7;}
+    .bad{color:#fca5a5;}
+    hr{border:0;border-top:1px solid #222;margin:14px 0;}
+    pre{white-space:pre-wrap;margin:8px 0 0;color:#bdbdbd;}
+    .thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;}
+    .thumb{width:78px;border:1px solid #2a2a2a;border-radius:10px;overflow:hidden;background:#111;}
+    .thumb img{display:block;width:100%;height:auto;}
+    .thumb .cap{font-size:11px;color:#aaa;padding:6px 8px;border-top:1px solid #222;}
+    #maskPreview{width:100%;height:auto;border:1px solid #222;border-radius:12px;background:#111;margin-top:8px;}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="stage">
+      <canvas id="view" width="1080" height="1080"></canvas>
+    </div>
+
+    <div class="panel">
+      <div class="pill">Upload → Halftone → Hover/Drag → Export</div>
+
+      <div class="two" style="margin-top:10px;">
+        <button id="resetAll">기본값으로 리셋</button>
+        <button id="clearDrag">드래그 흔적만 지우기</button>
+      </div>
+
+      <div id="maskStatus" class="status">마스크 로딩: <span>대기중…</span></div>
+      <div id="maskThumbs" class="thumbs" style="display:none;"></div>
+
+      <div class="two" style="margin-top:10px;">
+        <div>
+          <label>마스크 프리뷰</label>
+          <select id="maskPick">
+            <option value="S">S</option>
+            <option value="E">E</option>
+            <option value="O">O</option>
+            <option value="C">C</option>
+          </select>
+        </div>
+        <div>
+          <label>마스크 캐시</label>
+          <button id="rebuildMaskCache">재생성</button>
+        </div>
+      </div>
+
+      <canvas id="maskPreview" width="256" height="256"></canvas>
+      <div id="maskMeta" class="status">마스크 밀도: -</div>
+
+      <pre id="maskDebug"></pre>
+
+      <hr/>
+
+      <label>이미지 불러오기</label>
+      <input id="file" type="file" accept="image/*" />
+      <div class="hint">Hover(지나가기)=일시 효과 / 드래그(누르고 이동)=누적 효과</div>
+
+      <hr/>
+
+      <label>해상도 프리셋</label>
+      <select id="preset">
+        <option value="1080x1080">1080×1080 (IG 1:1)</option>
+        <option value="1080x1350">1080×1350 (IG 4:5)</option>
+        <option value="1920x1080">1920×1080 (FHD)</option>
+        <option value="3840x2160">3840×2160 (4K)</option>
+        <option value="2481x3507">A4 300dpi (2481×3507)</option>
+        <option value="3507x4962">A3 300dpi (3507×4962)</option>
+      </select>
+
+      <div class="two" style="margin-top:10px;">
+        <div>
+          <label>모드</label>
+          <select id="mode">
+            <option value="0">기본(사각 셀 + 사각 구멍)</option>
+            <option value="1">응용(S/E/O/C 마스크)</option>
+          </select>
+        </div>
+        <div>
+          <label>마스크 반전</label>
+          <select id="invertMask">
+            <option value="0">OFF (흰색=구멍)</option>
+            <option value="1">ON (검은색=구멍)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="two" style="margin-top:10px;">
+        <div>
+          <label>응용 순서</label>
+          <select id="order">
+            <option value="1" selected>S → E → C → O</option>
+            <option value="0">S → E → O → C</option>
+          </select>
+        </div>
+        <div>
+          <label>톤 자동 균등</label>
+          <button id="autoTones">4등분 자동 맞춤</button>
+        </div>
+      </div>
+      <div id="binInfo" class="status">분포: -</div>
+
+      <hr/>
+
+      <label>셀 크기(px)</label>
+      <input id="cell" type="range" min="4" max="80" value="18" />
+
+      <label style="margin-top:12px;">구멍 크기 (어두움→밝음)</label>
+      <div class="two">
+        <div>
+          <label>Min(%)</label>
+          <input id="holeMin" type="range" min="0" max="95" value="8" />
+        </div>
+        <div>
+          <label>Max(%)</label>
+          <input id="holeMax" type="range" min="0" max="95" value="78" />
+        </div>
+      </div>
+
+      <div class="two" style="margin-top:12px;">
+        <div>
+          <label>대비</label>
+          <input id="contrast" type="range" min="10" max="300" value="120" />
+        </div>
+        <div>
+          <label>감마</label>
+          <input id="gamma" type="range" min="50" max="250" value="100" />
+        </div>
+      </div>
+
+      <label style="margin-top:12px;">S/E/O/C 톤 경계(응용모드)</label>
+      <div class="two">
+        <div><label>T1</label><input id="t1" type="range" min="0" max="100" value="25" /></div>
+        <div><label>T2</label><input id="t2" type="range" min="0" max="100" value="50" /></div>
+      </div>
+      <div class="two" style="margin-top:8px;">
+        <div><label>T3</label><input id="t3" type="range" min="0" max="100" value="75" /></div>
+        <div></div>
+      </div>
+
+      <hr/>
+
+      <label>인터랙션(hover/drag 공통)</label>
+      <div class="two">
+        <div>
+          <label>반경</label>
+          <input id="brushR" type="range" min="5" max="240" value="60" />
+        </div>
+        <div>
+          <label>강도</label>
+          <input id="brushS" type="range" min="1" max="100" value="35" />
+        </div>
+      </div>
+      <div class="two" style="margin-top:8px;">
+        <div>
+          <label>흐트러짐</label>
+          <input id="jitter" type="range" min="0" max="200" value="40" />
+        </div>
+        <div>
+          <label>간격 벌어짐</label>
+          <input id="gap" type="range" min="0" max="200" value="35" />
+        </div>
+      </div>
+
+      <hr/>
+
+      <label>Export</label>
+
+      <label style="margin-top:10px;">SVG Export 모드</label>
+      <select id="svgMode">
+        <option value="edit">셀 편집(무거움/격자 보일 수 있음)</option>
+        <option value="compact" selected>컴팩트(추천/격자 최소)</option>
+      </select>
+
+      <div class="two" style="margin-top:10px;">
+        <button id="savePNG">PNG 저장</button>
+        <button id="saveSVG">SVG 저장</button>
+      </div>
+
+      <div class="two" style="margin-top:10px;">
+        <button id="saveWEBM">WebM 저장(5초)</button>
+        <div></div>
+      </div>
+
+      <div class="status" style="margin-top:10px;">Export Debug</div>
+      <pre id="exportDebug"></pre>
+
+      <div class="hint">
+        ✅ “응용인데 사각만 나옴”의 90%는 마스크가 <b>거의 전체 흰색/전체 검정</b>으로 읽히는 경우야.<br/>
+        위의 <b>마스크 프리뷰</b>에서 글자 모양이 제대로 보이는지 확인해줘.
+      </div>
+    </div>
+  </div>
+
+<script>
+;(() => {
+  const $ = (id) => document.getElementById(id);
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+  const statusEl = $("maskStatus");
+  const debugEl  = $("maskDebug");
+  const thumbsEl = $("maskThumbs");
+  const exportDebugEl = $("exportDebug");
+  const maskPreview = $("maskPreview");
+  const mctx = maskPreview.getContext("2d");
+  const maskMeta = $("maskMeta");
+
+  function setStatus(html, dbg = "") {
+    statusEl.innerHTML = html;
+    debugEl.textContent = dbg;
+  }
+  function setExportDebug(txt){ exportDebugEl.textContent = txt || ""; }
+
+  window.addEventListener("error", (e) => {
+    setStatus(`스크립트 에러: <span class="bad">${e.message}</span>`, `${e.filename}:${e.lineno}`);
+  });
+  window.addEventListener("unhandledrejection", (e) => {
+    const msg = e.reason?.message || String(e.reason);
+    setStatus(`Promise 에러: <span class="bad">${msg}</span>`);
+  });
+
+  function withTimeout(p, ms, label) {
+    return Promise.race([
+      p,
+      new Promise((_, rej) => setTimeout(() => rej(new Error(`TIMEOUT ${ms}ms: ${label}`)), ms)),
+    ]);
+  }
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
+
+  function loadImageAsset(url) {
+    const abs = new URL(url, window.location.href).href;
+    return withTimeout(new Promise((resolve, reject) => {
+      const img = new Image();
+      const u = new URL(abs);
+      if ((u.protocol === "http:" || u.protocol === "https:") && u.origin !== window.location.origin) {
+        img.crossOrigin = "anonymous";
+      }
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error(`이미지 로딩 실패: ${abs}`));
+      img.src = abs;
+    }), 7000, `img ${abs}`);
+  }
+
+  // ---- WebGL setup ----
+  const canvas = $("view");
+  const gl = canvas.getContext("webgl", { antialias: true, preserveDrawingBuffer: true });
+  if (!gl) {
+    setStatus(`WebGL 오류: <span class="bad">브라우저에서 WebGL이 꺼져있어</span>`);
+    return;
+  }
+  gl.clearColor(1,1,1,1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+
+  const vs = `
+    attribute vec2 a_pos;
+    varying vec2 v_uv;
+    void main(){
+      v_uv = (a_pos + 1.0) * 0.5;
+      gl_Position = vec4(a_pos, 0.0, 1.0);
+    }
+  `;
+
+  const fs = `
+    precision highp float;
+    varying vec2 v_uv;
+
+    uniform sampler2D u_image;
+    uniform sampler2D u_maskS;
+    uniform sampler2D u_maskE;
+    uniform sampler2D u_maskO;
+    uniform sampler2D u_maskC;
+    uniform sampler2D u_brush;
+
+    uniform vec2  u_resolution;
+    uniform vec2  u_imgScale;
+    uniform vec2  u_imgOffset;
+
+    uniform float u_cellSize;
+    uniform float u_holeMin;
+    uniform float u_holeMax;
+    uniform float u_contrast;
+    uniform float u_gamma;
+
+    uniform float u_t1;
+    uniform float u_t2;
+    uniform float u_t3;
+
+    uniform int   u_mode;
+    uniform int   u_invertMask;
+    uniform int   u_order;
+
+    uniform float u_jitter;
+    uniform float u_gap;
+
+    uniform vec2  u_cursor;
+    uniform float u_cursorActive;
+    uniform float u_hoverR;
+    uniform float u_hoverS;
+
+    float luma(vec3 c){ return dot(c, vec3(0.2126,0.7152,0.0722)); }
+
+    float hash21(vec2 p){
+      p = fract(p * vec2(123.34, 456.21));
+      p += dot(p, p + 45.32);
+      return fract(p.x * p.y);
+    }
+
+    float sampleMask(int idx, vec2 uv01){
+      float m = 0.0;
+      if (idx == 0) m = texture2D(u_maskS, uv01).r;
+      else if (idx == 1) m = texture2D(u_maskE, uv01).r;
+      else if (idx == 2) m = texture2D(u_maskO, uv01).r;
+      else m = texture2D(u_maskC, uv01).r;
+
+      if (u_invertMask == 1) m = 1.0 - m;
+      return m;
+    }
+
+    void main(){
+      vec2 uv = v_uv;
+
+      float wHover = 0.0;
+      if (u_cursorActive > 0.5){
+        vec2 p0 = uv * u_resolution;
+        vec2 cp = u_cursor * u_resolution;
+        float dist = length(p0 - cp);
+        wHover = smoothstep(u_hoverR, 0.0, dist) * u_hoverS;
+      }
+      float wPaint = texture2D(u_brush, uv).r;
+      float w = max(wHover, wPaint);
+
+      vec2 iuv = (uv - u_imgOffset) / u_imgScale;
+      if (iuv.x < 0.0 || iuv.x > 1.0 || iuv.y < 0.0 || iuv.y > 1.0){
+        gl_FragColor = vec4(1.0);
+        return;
+      }
+
+      vec2 p = uv * u_resolution;
+
+      vec2 center = (floor(p / u_cellSize) + 0.5) * u_cellSize;
+      vec2 dir = normalize(p - center + vec2(1e-4));
+      p += dir * w * u_gap * 0.35;
+
+      vec2 cell = floor(p / u_cellSize);
+      float rnd = hash21(cell);
+      vec2 jit = (vec2(rnd, hash21(cell + 7.13)) - 0.5) * (w * u_jitter);
+      p += jit;
+
+      cell = floor(p / u_cellSize);
+      vec2 f = fract(p / u_cellSize);
+      vec2 local = f - 0.5;
+
+      vec2 centerUv = ((cell + 0.5) * u_cellSize) / u_resolution;
+      vec2 centerIuv = (centerUv - u_imgOffset) / u_imgScale;
+      vec3 src = texture2D(u_image, centerIuv).rgb;
+
+      float g = luma(src);
+      g = (g - 0.5) * u_contrast + 0.5;
+      g = clamp(g, 0.0, 1.0);
+      g = pow(g, 1.0 / u_gamma);
+
+      float hole = mix(u_holeMin, u_holeMax, g);
+
+      float edge = max(abs(local.x), abs(local.y));
+      float outer = step(edge, 0.5);
+
+      float holeInside = 0.0;
+
+      if (u_mode == 0){
+        vec2 h = abs(local) / max(hole, 1e-4);
+        holeInside = step(max(h.x, h.y), 0.5);
+      } else {
+        int idx = 0;
+        if (u_order == 0){
+          if (g < u_t1) idx = 0;
+          else if (g < u_t2) idx = 1;
+          else if (g < u_t3) idx = 2;
+          else idx = 3;
+        } else {
+          if (g < u_t1) idx = 0;
+          else if (g < u_t2) idx = 1;
+          else if (g < u_t3) idx = 3;
+          else idx = 2;
+        }
+
+        vec2 muv = (local / max(hole, 1e-4)) + 0.5;
+        float m = 0.0;
+        if (muv.x >= 0.0 && muv.x <= 1.0 && muv.y >= 0.0 && muv.y <= 1.0){
+          m = sampleMask(idx, muv);
+        }
+        holeInside = step(0.5, m);
+      }
+
+      float ink = outer * (1.0 - holeInside);
+      vec3 col = mix(vec3(1.0), vec3(0.0), ink);
+      gl_FragColor = vec4(col, 1.0);
+    }
+  `;
+
+  function compile(type, src){
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)){
+      throw new Error(gl.getShaderInfoLog(sh) || "Shader compile failed");
+    }
+    return sh;
+  }
+  function link(vsSrc, fsSrc){
+    const prog = gl.createProgram();
+    gl.attachShader(prog, compile(gl.VERTEX_SHADER, vsSrc));
+    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fsSrc));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)){
+      throw new Error(gl.getProgramInfoLog(prog) || "Program link failed");
+    }
+    return prog;
+  }
+
+  const program = link(vs, fs);
+  gl.useProgram(program);
+
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+    -1,-1,  1,-1, -1, 1,
+    -1, 1,  1,-1,  1, 1
+  ]), gl.STATIC_DRAW);
+
+  const a_pos = gl.getAttribLocation(program, "a_pos");
+  gl.enableVertexAttribArray(a_pos);
+  gl.vertexAttribPointer(a_pos, 2, gl.FLOAT, false, 0, 0);
+
+  const U = (name) => gl.getUniformLocation(program, name);
+
+  function createTex(unit){
+    const tex = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1,1,0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255,255,255,255]));
+    return tex;
+  }
+
+  const texImage = createTex(0);
+  const texS = createTex(1);
+  const texE = createTex(2);
+  const texO = createTex(3);
+  const texC = createTex(4);
+  const texBrush = createTex(5);
+
+  gl.uniform1i(U("u_image"), 0);
+  gl.uniform1i(U("u_maskS"), 1);
+  gl.uniform1i(U("u_maskE"), 2);
+  gl.uniform1i(U("u_maskO"), 3);
+  gl.uniform1i(U("u_maskC"), 4);
+  gl.uniform1i(U("u_brush"), 5);
+
+  function uploadTextureFromImage(tex, unit, img){
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+  }
+
+  // ---- masks ----
+  const maskImgs = { S:null, E:null, O:null, C:null };
+  let masksReady = false;
+  let userTouchedInvert = false;
+
+  // ---- mask runs cache ----
+  const maskRunsCache = { S:null, E:null, O:null, C:null };
+  let maskRunsCacheKey = "";
+
+  function invalidateMaskCache(){
+    maskRunsCache.S = maskRunsCache.E = maskRunsCache.O = maskRunsCache.C = null;
+    maskRunsCacheKey = "";
+  }
+
+  function makeThumbs(){
+    thumbsEl.style.display = "flex";
+    thumbsEl.innerHTML = "";
+    for (const k of ["S","E","O","C"]) {
+      const img = maskImgs[k];
+      if (!img) continue;
+      const d = document.createElement("div");
+      d.className = "thumb";
+      const im = document.createElement("img");
+      im.src = img.src;
+      const cap = document.createElement("div");
+      cap.className = "cap";
+      cap.textContent = k;
+      d.appendChild(im);
+      d.appendChild(cap);
+      thumbsEl.appendChild(d);
+    }
+  }
+
+  function drawMaskPreview(){
+    const key = $("maskPick").value;
+    const img = maskImgs[key];
+    if (!img) {
+      mctx.clearRect(0,0,maskPreview.width,maskPreview.height);
+      maskMeta.textContent = "마스크 밀도: -";
+      return;
+    }
+
+    const inv = parseInt($("invertMask").value,10) === 1;
+    const size = maskPreview.width;
+    const c = document.createElement("canvas");
+    c.width = size; c.height = size;
+    const ctx = c.getContext("2d", { willReadFrequently:true });
+
+    ctx.clearRect(0,0,size,size);
+    ctx.drawImage(img, 0, 0, size, size);
+
+    const id = ctx.getImageData(0,0,size,size);
+    const d = id.data;
+
+    let on = 0;
+    for (let i=0;i<d.length;i+=4){
+      let v = d[i]; // R
+      if (inv) v = 255 - v;
+
+      // preview는 threshold(128)로 흑백화
+      const bit = v >= 128 ? 255 : 0;
+      if (bit === 255) on++;
+
+      d[i] = d[i+1] = d[i+2] = bit;
+      d[i+3] = 255;
+    }
+    ctx.putImageData(id,0,0);
+
+    // 화면에 표시: 검정 배경 + 흰 패턴
+    mctx.clearRect(0,0,size,size);
+    mctx.fillStyle = "#000";
+    mctx.fillRect(0,0,size,size);
+    mctx.drawImage(c,0,0);
+
+    const ratio = on/(size*size);
+    maskMeta.innerHTML = `마스크 밀도(ON): <span class="${(ratio>0.75||ratio<0.03)?"bad":"ok"}">${(ratio*100).toFixed(1)}%</span> (invert=${inv? "ON":"OFF"})`;
+
+    // 너무 극단이면 안내
+    if (ratio>0.75) {
+      setStatus(`마스크 로딩: <span class="ok">성공</span> <span class="bad">(거의 전체가 구멍)</span>`,
+        `현재 선택(${key})이 ${(ratio*100).toFixed(1)}% ON이야 → 응용이 사각처럼 나올 확률 높음.\n마스크 반전을 바꿔봐!`);
+    }
+    if (ratio<0.03) {
+      setStatus(`마스크 로딩: <span class="ok">성공</span> <span class="bad">(거의 구멍이 없음)</span>`,
+        `현재 선택(${key})이 ${(ratio*100).toFixed(1)}% ON이야 → 응용이 거의 안 뚫릴 수 있어.\n마스크 반전을 바꿔봐!`);
+    }
+  }
+
+  $("maskPick").addEventListener("change", drawMaskPreview);
+
+  $("invertMask").addEventListener("change", () => {
+    userTouchedInvert = true;
+    invalidateMaskCache();
+    drawMaskPreview();
+  });
+
+  $("rebuildMaskCache").addEventListener("click", () => {
+    invalidateMaskCache();
+    try{
+      ensureMaskRunsCache();
+      drawMaskPreview();
+      alert("마스크 캐시 재생성 완료!");
+    }catch(e){
+      alert(e?.message || String(e));
+    }
+  });
+
+  async function loadMaskWithFallback(key, tex, unit){
+    const UPPER = key;
+    const lower = key.toLowerCase();
+
+    const candidates = [
+      `/masks/${UPPER}.png`, `/masks/${UPPER}.PNG`, `/masks/${lower}.png`, `/masks/${lower}.PNG`,
+      `masks/${UPPER}.png`,  `masks/${UPPER}.PNG`,  `masks/${lower}.png`,  `masks/${lower}.PNG`,
+      `/masks/${UPPER}_view.png`, `/masks/${UPPER}_view.PNG`,
+      `masks/${UPPER}_view.png`,  `masks/${UPPER}_view.PNG`,
+    ];
+
+    const tried = [];
+    let lastErr = null;
+
+    for (const url of candidates){
+      tried.push(url);
+      setStatus(`마스크 로딩: <span>로딩중…</span><div class="hint">시도중: ${url}</div>`);
+      try{
+        const img = await loadImageAsset(url);
+        maskImgs[key] = img;
+        uploadTextureFromImage(tex, unit, img);
+        return url;
+      }catch(e){
+        lastErr = e;
+      }
+    }
+
+    throw new Error(
+      `마스크 ${key} 로딩 실패\n` +
+      `- 시도한 경로:\n${tried.map(t => "  " + t).join("\n")}\n` +
+      `- 마지막 오류: ${lastErr?.message || lastErr}`
+    );
+  }
+
+  // 마스크 로딩 시작
+  (async () => {
+    try{
+      setStatus(`마스크 로딩: <span>로딩중…</span>`);
+      const uS = await loadMaskWithFallback("S", texS, 1);
+      const uE = await loadMaskWithFallback("E", texE, 2);
+      const uO = await loadMaskWithFallback("O", texO, 3);
+      const uC = await loadMaskWithFallback("C", texC, 4);
+
+      masksReady = true;
+      makeThumbs();
+      drawMaskPreview();
+
+      setStatus(`마스크 로딩: <span class="ok">성공</span>`, `${uS}\n${uE}\n${uO}\n${uC}\n\n(응용모드 사용 가능)`);
+    }catch(e){
+      masksReady = false;
+      setStatus(`마스크 로딩: <span class="bad">실패</span>`, e.message || String(e));
+    }
+  })();
+
+  // 응용모드: 마스크 준비 전에는 못 쓰게 막기
+  $("mode").addEventListener("change", (e) => {
+    if (String(e.target.value) === "1") {
+      if (!masksReady || !maskImgs.S || !maskImgs.E || !maskImgs.O || !maskImgs.C) {
+        alert("응용모드는 masks/S,E,O,C 이미지 로딩이 완료되어야 사용할 수 있어!");
+        e.target.value = "0";
+        return;
+      }
+      // 응용모드로 바꾸는 순간 캐시 준비
+      try{ ensureMaskRunsCache(); }catch(_) {}
+    }
+  });
+
+  // ---- source image ----
+  let uploadedImg = null;
+  let srcW = 1, srcH = 1;
+
+  const onePx = new Image();
+  onePx.src = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO0qz0oAAAAASUVORK5CYII=";
+  onePx.onload = () => uploadTextureFromImage(texImage, 0, onePx);
+
+  $("file").addEventListener("change", async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+
+    const objUrl = URL.createObjectURL(f);
+    const img = await withTimeout(new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = reject;
+      i.src = objUrl;
+    }), 7000, "local image decode");
+    URL.revokeObjectURL(objUrl);
+
+    uploadedImg = img;
+    srcW = img.naturalWidth || img.width || 1;
+    srcH = img.naturalHeight || img.height || 1;
+
+    uploadTextureFromImage(texImage, 0, img);
+    autoSetToneThresholds();
+  });
+
+  function setCanvasSize(w,h){
+    canvas.width = w; canvas.height = h;
+    gl.viewport(0,0,w,h);
+  }
+  $("preset").addEventListener("change", (e) => {
+    const [w,h] = e.target.value.split("x").map(n => parseInt(n,10));
+    setCanvasSize(w,h);
+  });
+
+  function computeContainFit(){
+    const cw = canvas.width, ch = canvas.height;
+    const ir = srcW / srcH;
+    const cr = cw / ch;
+
+    let scaleX = 1, scaleY = 1, offX = 0, offY = 0;
+
+    if (ir > cr){
+      const hh = cw / ir;
+      scaleX = 1.0;
+      scaleY = hh / ch;
+      offX = 0.0;
+      offY = (1.0 - scaleY) * 0.5;
+    }else{
+      const ww = ch * ir;
+      scaleX = ww / cw;
+      scaleY = 1.0;
+      offX = (1.0 - scaleX) * 0.5;
+      offY = 0.0;
+    }
+    return { scaleX, scaleY, offX, offY };
+  }
+
+  // ---- brush (drag = 누적) ----
+  const brushRes = 512;
+  const brushCanvas = document.createElement("canvas");
+  brushCanvas.width = brushRes;
+  brushCanvas.height = brushRes;
+  const bctx = brushCanvas.getContext("2d");
+  bctx.fillStyle = "black";
+  bctx.fillRect(0,0,brushRes,brushRes);
+
+  function uploadBrushTex(){
+    gl.activeTexture(gl.TEXTURE0 + 5);
+    gl.bindTexture(gl.TEXTURE_2D, texBrush);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, brushCanvas);
+  }
+  uploadBrushTex();
+
+  let cursorUv = { x:0.5, y:0.5 };
+  let cursorActive = 0.0;
+  let isDown = false;
+
+  canvas.addEventListener("mouseenter", () => cursorActive = 1.0);
+  canvas.addEventListener("mouseleave", () => cursorActive = 0.0);
+  canvas.addEventListener("mousedown", () => isDown = true);
+  window.addEventListener("mouseup", () => isDown = false);
+
+  function updateCursorUv(e){
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const yTop = (e.clientY - rect.top) / rect.height;
+    const y = 1.0 - yTop;
+    cursorUv.x = clamp(x, 0, 1);
+    cursorUv.y = clamp(y, 0, 1);
+  }
+
+  function paintDrag(e){
+    if (!isDown) return;
+    updateCursorUv(e);
+
+    const r = parseFloat($("brushR").value);
+    const s = parseFloat($("brushS").value) / 100;
+
+    const bx = cursorUv.x * brushRes;
+    const by = (1.0 - cursorUv.y) * brushRes;
+
+    const rad = (r / Math.max(canvas.width, canvas.height)) * brushRes;
+    const g = bctx.createRadialGradient(bx, by, 0, bx, by, rad);
+    g.addColorStop(0, `rgba(255,255,255,${0.45 * s})`);
+    g.addColorStop(1, `rgba(255,255,255,0)`);
+
+    bctx.globalCompositeOperation = "lighter";
+    bctx.fillStyle = g;
+    bctx.beginPath();
+    bctx.arc(bx, by, rad, 0, Math.PI * 2);
+    bctx.fill();
+    bctx.globalCompositeOperation = "source-over";
+
+    uploadBrushTex();
+  }
+
+  canvas.addEventListener("mousemove", (e) => {
+    updateCursorUv(e);
+    paintDrag(e);
+  });
+
+  $("clearDrag").addEventListener("click", () => {
+    bctx.fillStyle = "black";
+    bctx.fillRect(0,0,brushRes,brushRes);
+    uploadBrushTex();
+  });
+
+  // ---- auto tone thresholds ----
+  function computeToneArray(sampleSize = 200){
+    if (!uploadedImg) return null;
+
+    const c = document.createElement("canvas");
+    c.width = sampleSize; c.height = sampleSize;
+    const ctx = c.getContext("2d");
+    ctx.fillStyle = "white";
+    ctx.fillRect(0,0,sampleSize,sampleSize);
+    ctx.drawImage(uploadedImg, 0, 0, sampleSize, sampleSize);
+
+    const data = ctx.getImageData(0,0,sampleSize,sampleSize).data;
+
+    const contrast = parseFloat($("contrast").value) / 100;
+    const gamma = parseFloat($("gamma").value) / 100;
+
+    const tones = new Float32Array(sampleSize * sampleSize);
+    let k = 0;
+
+    for (let i=0; i<data.length; i+=4){
+      const r = data[i]/255, g = data[i+1]/255, b = data[i+2]/255;
+      let v = 0.2126*r + 0.7152*g + 0.0722*b;
+      v = (v - 0.5) * contrast + 0.5;
+      v = Math.max(0, Math.min(1, v));
+      v = Math.pow(v, 1 / gamma);
+      tones[k++] = v;
+    }
+    return tones;
+  }
+
+  function percentile(sortedArr, p){
+    const n = sortedArr.length;
+    const idx = Math.max(0, Math.min(n-1, Math.floor(p * (n - 1))));
+    return sortedArr[idx];
+  }
+
+  function updateBinInfo(t1, t2, t3){
+    const el = $("binInfo");
+    const tones = computeToneArray(160);
+    if (!tones){ el.textContent = "분포: -"; return; }
+
+    let a=0,b=0,c=0,d=0;
+    for (let i=0; i<tones.length; i++){
+      const v = tones[i];
+      if (v < t1) a++;
+      else if (v < t2) b++;
+      else if (v < t3) c++;
+      else d++;
+    }
+    const tot = tones.length;
+    el.textContent =
+      `분포(대략): 1구간 ${Math.round(a/tot*100)}% / 2구간 ${Math.round(b/tot*100)}% / 3구간 ${Math.round(c/tot*100)}% / 4구간 ${Math.round(d/tot*100)}%`;
+  }
+
+  function autoSetToneThresholds(){
+    const tones = computeToneArray(220);
+    if (!tones){ alert("먼저 이미지를 업로드해줘!"); return; }
+
+    const arr = Array.from(tones);
+    arr.sort((x,y) => x - y);
+
+    const t1 = percentile(arr, 0.25);
+    const t2 = percentile(arr, 0.50);
+    const t3 = percentile(arr, 0.75);
+
+    $("t1").value = Math.round(t1 * 100);
+    $("t2").value = Math.round(t2 * 100);
+    $("t3").value = Math.round(t3 * 100);
+
+    updateBinInfo(t1, t2, t3);
+  }
+
+  $("autoTones").addEventListener("click", autoSetToneThresholds);
+
+  ["contrast","gamma","t1","t2","t3"].forEach(id => {
+    $(id).addEventListener("input", () => {
+      updateBinInfo(
+        parseFloat($("t1").value)/100,
+        parseFloat($("t2").value)/100,
+        parseFloat($("t3").value)/100
+      );
+    });
+  });
+
+  // ---- render loop ----
+  function render(){
+    const fit = computeContainFit();
+
+    gl.uniform2f(U("u_resolution"), canvas.width, canvas.height);
+    gl.uniform2f(U("u_imgScale"), fit.scaleX, fit.scaleY);
+    gl.uniform2f(U("u_imgOffset"), fit.offX, fit.offY);
+
+    const cell = parseFloat($("cell").value);
+    const holeMin = parseFloat($("holeMin").value) / 100;
+    const holeMax = parseFloat($("holeMax").value) / 100;
+
+    gl.uniform1f(U("u_cellSize"), cell);
+    gl.uniform1f(U("u_holeMin"), Math.min(holeMin, holeMax));
+    gl.uniform1f(U("u_holeMax"), Math.max(holeMin, holeMax));
+
+    gl.uniform1f(U("u_contrast"), parseFloat($("contrast").value) / 100);
+    gl.uniform1f(U("u_gamma"), parseFloat($("gamma").value) / 100);
+
+    gl.uniform1f(U("u_t1"), parseFloat($("t1").value) / 100);
+    gl.uniform1f(U("u_t2"), parseFloat($("t2").value) / 100);
+    gl.uniform1f(U("u_t3"), parseFloat($("t3").value) / 100);
+
+    gl.uniform1i(U("u_mode"), parseInt($("mode").value, 10));
+    gl.uniform1i(U("u_invertMask"), parseInt($("invertMask").value, 10));
+    gl.uniform1i(U("u_order"), parseInt($("order").value, 10));
+
+    gl.uniform1f(U("u_jitter"), (parseFloat($("jitter").value) / 100) * cell);
+    gl.uniform1f(U("u_gap"), (parseFloat($("gap").value) / 100) * cell);
+
+    gl.uniform2f(U("u_cursor"), cursorUv.x, cursorUv.y);
+    gl.uniform1f(U("u_cursorActive"), cursorActive);
+    gl.uniform1f(U("u_hoverR"), parseFloat($("brushR").value));
+    gl.uniform1f(U("u_hoverS"), parseFloat($("brushS").value) / 100);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    requestAnimationFrame(render);
+  }
+  requestAnimationFrame(render);
+
+  // ---- SVG Export (응용모드 = rect 스탬프) ----
+  function buildMaskRunsFromImage(img, invert = false, size = 128, threshold = 128) {
+    const c = document.createElement("canvas");
+    c.width = size; c.height = size;
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    ctx.clearRect(0,0,size,size);
+    ctx.drawImage(img, 0, 0, size, size);
+    const data = ctx.getImageData(0,0,size,size).data;
+
+    const runs = [];
+    for (let y = 0; y < size; y++) {
+      let runStart = -1;
+      for (let x = 0; x < size; x++) {
+        const i = (y * size + x) * 4;
+        let v = data[i];
+        if (invert) v = 255 - v;
+        const on = v >= threshold;
+
+        if (on && runStart < 0) runStart = x;
+
+        const isEnd = (!on) || (x === size - 1);
+        if (isEnd && runStart >= 0) {
+          const end = (on && x === size - 1) ? x : (x - 1);
+
+          const rx = runStart / size;
+          const ry = (size - 1 - y) / size; // y flip
+          const rw = (end - runStart + 1) / size;
+          const rh = 1 / size;
+
+          runs.push({ x: rx, y: ry, w: rw, h: rh });
+          runStart = -1;
+        }
+      }
+    }
+    return runs;
+  }
+
+  function approxDensityFromRuns(runs){
+    let a = 0;
+    for (const r of runs) a += r.w * r.h;
+    return a; // 0..1
+  }
+
+  function ensureMaskRunsCache() {
+    const invertMask = parseInt($("invertMask").value, 10);
+    const size = 128;
+    const threshold = 128;
+    const key = `${invertMask}|${size}|${threshold}`;
+
+    if (maskRunsCacheKey === key && maskRunsCache.S && maskRunsCache.E && maskRunsCache.O && maskRunsCache.C) {
+      return;
+    }
+    if (!maskImgs.S || !maskImgs.E || !maskImgs.O || !maskImgs.C) {
+      throw new Error("응용모드 내보내기 실패: 마스크(S/E/O/C) 로딩이 완료되지 않았어.");
+    }
+
+    maskRunsCache.S = buildMaskRunsFromImage(maskImgs.S, invertMask === 1, size, threshold);
+    maskRunsCache.E = buildMaskRunsFromImage(maskImgs.E, invertMask === 1, size, threshold);
+    maskRunsCache.O = buildMaskRunsFromImage(maskImgs.O, invertMask === 1, size, threshold);
+    maskRunsCache.C = buildMaskRunsFromImage(maskImgs.C, invertMask === 1, size, threshold);
+    maskRunsCacheKey = key;
+
+    // 캐시 밀도 로그
+    const dS = approxDensityFromRuns(maskRunsCache.S);
+    const dE = approxDensityFromRuns(maskRunsCache.E);
+    const dO = approxDensityFromRuns(maskRunsCache.O);
+    const dC = approxDensityFromRuns(maskRunsCache.C);
+    const avg = (dS+dE+dO+dC)/4;
+
+    if (avg > 0.75 || avg < 0.03) {
+      setStatus(`마스크 로딩: <span class="ok">성공</span> <span class="bad">(반전 강력 의심)</span>`,
+        `runs density(대략): S ${(dS*100).toFixed(1)}% / E ${(dE*100).toFixed(1)}% / O ${(dO*100).toFixed(1)}% / C ${(dC*100).toFixed(1)}%\n`+
+        `avg ${(avg*100).toFixed(1)}%\n\n`+
+        `→ 이 상태면 응용이 "사각"처럼 보여.\n`+
+        `마스크 반전(invertMask) ON/OFF 바꿔서 다시 캐시 재생성해봐.`
+      );
+    }
+  }
+
+  function pickMaskKeyFactory(order, t1, t2, t3) {
+    return (g) => {
+      let idx=0;
+      if (order===0){
+        if (g<t1) idx=0; else if (g<t2) idx=1; else if (g<t3) idx=2; else idx=3;
+        return ["S","E","O","C"][idx];
+      } else {
+        if (g<t1) idx=0; else if (g<t2) idx=1; else if (g<t3) idx=3; else idx=2;
+        return ["S","E","C","O"][idx];
+      }
+    };
+  }
+
+  function exportSVGWithMode(svgMode){
+    const w = canvas.width;
+    const h = canvas.height;
+
+    const cell = parseFloat($("cell").value);
+    const holeMin = parseFloat($("holeMin").value) / 100;
+    const holeMax = parseFloat($("holeMax").value) / 100;
+
+    const contrast = parseFloat($("contrast").value) / 100;
+    const gamma = parseFloat($("gamma").value) / 100;
+
+    const mode = parseInt($("mode").value, 10);
+    const order = parseInt($("order").value, 10);
+
+    const t1 = parseFloat($("t1").value) / 100;
+    const t2 = parseFloat($("t2").value) / 100;
+    const t3 = parseFloat($("t3").value) / 100;
+
+    if (mode === 1) ensureMaskRunsCache();
+
+    // 원본 이미지 픽셀 샘플 준비
+    let imgData=null, iw=0, ih=0;
+    if (uploadedImg){
+      const oc = document.createElement("canvas");
+      iw = srcW || (uploadedImg.naturalWidth || uploadedImg.width || 1);
+      ih = srcH || (uploadedImg.naturalHeight || uploadedImg.height || 1);
+      oc.width=iw; oc.height=ih;
+      const octx = oc.getContext("2d");
+      octx.drawImage(uploadedImg,0,0,iw,ih);
+      imgData = octx.getImageData(0,0,iw,ih).data;
+    }
+
+    function sampleGray01(u,v){
+      if (!imgData) return 1.0;
+      const x = Math.max(0, Math.min(iw-1, Math.floor(u*(iw-1))));
+      const y = Math.max(0, Math.min(ih-1, Math.floor(v*(ih-1))));
+      const idx = (y*iw + x) * 4;
+      const r = imgData[idx]/255, g = imgData[idx+1]/255, b = imgData[idx+2]/255;
+      let lum = 0.2126*r + 0.7152*g + 0.0722*b;
+      lum = (lum - 0.5) * contrast + 0.5;
+      lum = Math.max(0, Math.min(1, lum));
+      lum = Math.pow(lum, 1/gamma);
+      return lum;
+    }
+
+    const fit = computeContainFit();
+    const clipX = fit.offX * w;
+    const clipW = fit.scaleX * w;
+    const clipH = fit.scaleY * h;
+    const clipY = (1 - (fit.offY + fit.scaleY)) * h;
+
+    function grayAtCanvasXY(cx,cy){
+      const uvx = cx / w;
+      const uvyTop = cy / h;
+      const uvyWebGL = 1 - uvyTop;
+
+      const iux = (uvx - fit.offX) / fit.scaleX;
+      const iuyTex = (uvyWebGL - fit.offY) / fit.scaleY;
+      if (iux<0||iux>1||iuyTex<0||iuyTex>1) return {inside:false,g:1.0};
+
+      const vOrig = 1 - iuyTex;
+      return {inside:true, g: sampleGray01(iux, vOrig)};
+    }
+
+    const pickMaskKey = pickMaskKeyFactory(order, t1, t2, t3);
+
+    const x0 = Math.max(0, Math.floor(clipX / cell) * cell);
+    const y0 = Math.max(0, Math.floor(clipY / cell) * cell);
+    const x1 = Math.min(w, Math.ceil((clipX + clipW) / cell) * cell);
+    const y1 = Math.min(h, Math.ceil((clipY + clipH) / cell) * cell);
+
+    const parts=[];
+    parts.push(`<?xml version="1.0" encoding="UTF-8"?>`);
+    parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" shape-rendering="crispEdges">`);
+    parts.push(`<rect x="0" y="0" width="${w}" height="${h}" fill="white"/>`);
+
+    if (svgMode === "compact") {
+      parts.push(`<rect x="${clipX}" y="${clipY}" width="${clipW}" height="${clipH}" fill="black"/>`);
+    }
+
+    const blackCells = [];
+    const whiteHoles = [];
+
+    function stampMaskRects(maskKey, hx, hy, holeSide){
+      const runs = maskRunsCache[maskKey] || [];
+      for (const r of runs) {
+        whiteHoles.push(
+          `<rect x="${hx + r.x*holeSide}" y="${hy + r.y*holeSide}" width="${r.w*holeSide}" height="${r.h*holeSide}"/>`
+        );
+      }
+    }
+
+    for (let y = y0; y < y1; y += cell) {
+      for (let x = x0; x < x1; x += cell) {
+        const cx=x+cell/2, cy=y+cell/2;
+        const {inside,g} = grayAtCanvasXY(cx,cy);
+        if (!inside) continue;
+
+        const hole = holeMin + (holeMax - holeMin) * g;
+        const holeSide = Math.max(0, Math.min(cell, hole*cell));
+
+        if (holeSide <= 0.25) {
+          if (svgMode === "edit") blackCells.push(`<rect x="${x}" y="${y}" width="${cell}" height="${cell}"/>`);
+          continue;
+        }
+
+        const hx = x + (cell-holeSide)/2;
+        const hy = y + (cell-holeSide)/2;
+
+        if (svgMode === "edit") blackCells.push(`<rect x="${x}" y="${y}" width="${cell}" height="${cell}"/>`);
+
+        if (mode === 0) {
+          whiteHoles.push(`<rect x="${hx}" y="${hy}" width="${holeSide}" height="${holeSide}"/>`);
+        } else {
+          const k = pickMaskKey(g);
+          stampMaskRects(k, hx, hy, holeSide);
+        }
+      }
+    }
+
+    if (svgMode === "edit" && blackCells.length) {
+      parts.push(`<g fill="black">${blackCells.join("\n")}</g>`);
+    }
+    if (whiteHoles.length) {
+      parts.push(`<g fill="white">${whiteHoles.join("\n")}</g>`);
+    }
+
+    parts.push(`</svg>`);
+
+    const svgText = parts.join("\n");
+    const blob = new Blob([svgText], {type:"image/svg+xml;charset=utf-8"});
+    downloadBlob(blob, "halftone.svg");
+  }
+
+  function exportDiag(){
+    const mode = $("mode").value;
+    const svgMode = $("svgMode").value;
+    const inv = $("invertMask").value;
+    const pick = $("maskPick").value;
+    const has = (k)=> !!maskImgs[k];
+    let s = `mode=${mode} / svgMode=${svgMode} / invertMask=${inv}\n`;
+    s += `masksReady=${masksReady} (S=${has("S")},E=${has("E")},O=${has("O")},C=${has("C")})\n`;
+    s += `maskPick=${pick}\n`;
+    if (maskRunsCacheKey) {
+      s += `maskRunsCacheKey=${maskRunsCacheKey}\n`;
+      if (maskRunsCache.S) s += `runs: S=${maskRunsCache.S.length}, E=${maskRunsCache.E.length}, O=${maskRunsCache.O.length}, C=${maskRunsCache.C.length}\n`;
+      if (maskRunsCache.S) s += `density: S=${(approxDensityFromRuns(maskRunsCache.S)*100).toFixed(1)}%, E=${(approxDensityFromRuns(maskRunsCache.E)*100).toFixed(1)}%, O=${(approxDensityFromRuns(maskRunsCache.O)*100).toFixed(1)}%, C=${(approxDensityFromRuns(maskRunsCache.C)*100).toFixed(1)}%\n`;
+    } else {
+      s += `maskRunsCacheKey=(none)\n`;
+    }
+    return s;
+  }
+
+  // ---- exports ----
+  $("savePNG").addEventListener("click", () => {
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      downloadBlob(blob, "halftone.png");
+    }, "image/png");
+  });
+
+  $("saveSVG").addEventListener("click", () => {
+    setStatus(`SVG 내보내기: <span>진행중…</span><div class="hint">셀 크기/해상도에 따라 오래 걸릴 수 있어</div>`);
+    setExportDebug(exportDiag());
+    setTimeout(() => {
+      try{
+        const m = $("svgMode").value || "compact";
+        exportSVGWithMode(m);
+        setExportDebug(exportDiag() + "\n✅ export done");
+        setStatus(`SVG 내보내기: <span class="ok">완료</span>`);
+      }catch(e){
+        alert(e?.message || String(e));
+        console.error(e);
+        setExportDebug(exportDiag() + "\n❌ " + (e?.stack || e?.message || String(e)));
+        setStatus(`SVG 내보내기: <span class="bad">실패</span>`, e?.stack || (e?.message || String(e)));
+      }
+    }, 0);
+  });
+
+  $("saveWEBM").addEventListener("click", () => {
+    const stream = canvas.captureStream(60);
+    const candidates = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+    let mimeType = "video/webm";
+    for (const c of candidates){
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported(c)){ mimeType = c; break; }
+    }
+    const rec = new MediaRecorder(stream, { mimeType });
+    const chunks = [];
+    rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    rec.onstop = () => downloadBlob(new Blob(chunks, { type: "video/webm" }), "halftone.webm");
+    rec.start();
+    setTimeout(() => rec.stop(), 5000);
+  });
+
+  // ---- reset ----
+  const defaults = {
+    preset: "1080x1080",
+    mode: "0",
+    invertMask: "0",
+    order: "1",
+    cell: 18,
+    holeMin: 8,
+    holeMax: 78,
+    contrast: 120,
+    gamma: 100,
+    t1: 25, t2: 50, t3: 75,
+    brushR: 60,
+    brushS: 35,
+    jitter: 40,
+    gap: 35,
+    svgMode: "compact"
+  };
+
+  function setVal(id, v){ $(id).value = String(v); }
+
+  $("resetAll").addEventListener("click", () => {
+    setVal("preset", defaults.preset);
+    $("preset").dispatchEvent(new Event("change"));
+
+    setVal("mode", defaults.mode);
+    setVal("invertMask", defaults.invertMask);
+    setVal("order", defaults.order);
+
+    setVal("cell", defaults.cell);
+    setVal("holeMin", defaults.holeMin);
+    setVal("holeMax", defaults.holeMax);
+    setVal("contrast", defaults.contrast);
+    setVal("gamma", defaults.gamma);
+
+    setVal("t1", defaults.t1);
+    setVal("t2", defaults.t2);
+    setVal("t3", defaults.t3);
+
+    setVal("brushR", defaults.brushR);
+    setVal("brushS", defaults.brushS);
+    setVal("jitter", defaults.jitter);
+    setVal("gap", defaults.gap);
+
+    setVal("svgMode", defaults.svgMode);
+
+    bctx.fillStyle = "black";
+    bctx.fillRect(0,0,brushRes,brushRes);
+    uploadBrushTex();
+
+    invalidateMaskCache();
+    drawMaskPreview();
+    setExportDebug("");
+  });
+
+})();
+</script>
+</body>
+</html>
